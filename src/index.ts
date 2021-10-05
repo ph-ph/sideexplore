@@ -3,17 +3,10 @@ import {
   JupyterFrontEndPlugin
 } from '@jupyterlab/application';
 
-import { ICommandPalette, MainAreaWidget } from '@jupyterlab/apputils';
-import { Widget } from '@lumino/widgets';
-
-interface APODResponse {
-  copyright: string,
-  date: string,
-  explanation: string,
-  media_type: 'video' | 'image',
-  title: string,
-  url: string
-};
+import { ICommandPalette } from '@jupyterlab/apputils';
+import { Cell } from '@jupyterlab/cells';
+import { INotebookTracker, Notebook, NotebookActions } from '@jupyterlab/notebook';
+import { findIndex } from '@lumino/algorithm';
 
 /**
  * Initialization data for the sideexplore extension.
@@ -21,55 +14,94 @@ interface APODResponse {
 const plugin: JupyterFrontEndPlugin<void> = {
   id: 'sideexplore:plugin',
   autoStart: true,
-  activate: async (app: JupyterFrontEnd, palette: ICommandPalette) => {
-    console.log('JupyterLab extension sideexplore is activated!');
-
-    // Create blank content widget inside of MainAreaWidget
-    const content = new Widget();
-    const widget = new MainAreaWidget({ content });
-    widget.id = 'sideexplore-jupyterlab';
-    widget.title.label = 'Astronomy Picture';
-    widget.title.closable = true;
-
-    let img = document.createElement('img');
-    content.node.appendChild(img);
-
-    // Get a random date string in YYYY-MM-DD format
-    function randomDate() {
-      const start = new Date(2010, 1, 1);
-      const end = new Date(); // today date
-      const randomDate = new Date(start.getTime() + Math.random()*(end.getTime() - start.getTime()));
-      return randomDate.toISOString().slice(0, 10);
-    }
-
-    const response = await fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${randomDate()}`, { headers: [['Upgrade-Insecure-Requests', '1']]});
-    const data = await response.json() as APODResponse;
-
-    if (data.media_type === 'image') {
-      // Populate the image
-      img.src = data.url;
-      img.title = data.title;
-    } else {
-      console.log('Random APOD was not a picture :(');
-    }
-
-    // Add an application command
-    const command: string = 'sideexplore:open';
-    app.commands.addCommand(command, {
-      label: 'Random Astronomy Picture',
-      execute: () => {
-        if (!widget.isAttached) {
-          // Attach the widget to the main work area if it's not there
-          app.shell.add(widget, 'main');
-        }
-        // Activate the widget
-        app.shell.activateById(widget.id);
-      }
-    })
-
-    palette.addItem({ command, category: 'Tutorial' });
-  },
-  requires: [ICommandPalette]
+  activate: activate,
+  requires: [ICommandPalette, INotebookTracker]
 };
+
+/**
+* Activate the Side Explore extension.
+*/
+function activate(app: JupyterFrontEnd, palette: ICommandPalette, notebookTracker: INotebookTracker) {
+  console.log('JupyterLab extension sideexplore is activated!');
+
+  // Add an application command
+  const command: string = 'apod:open';
+  app.commands.addCommand(command, {
+    label: 'Create new side exploration section',
+    execute: () => {
+      console.log('Create new side exploration section command triggered');
+
+      if (!notebookTracker.currentWidget) {
+        console.log('Current widget is null');
+        return;
+      }
+
+      SideExplorePlugin.createSideExplorationCells(notebookTracker.currentWidget.content);
+    }
+  });
+
+  // Add the command to the palette.
+  palette.addItem({ command, category: 'Tutorial' }); // FIXME: update the category
+}
+
+namespace SideExplorePlugin {
+  export function createSideExplorationCells(notebook: Notebook): void {
+      if (!notebook.model) {
+        console.log('Notebook model is null');
+        return;
+      }
+
+      const activeCell = notebook.activeCell;
+      if (!activeCell) {
+        console.log('There is no active cell');
+        return;
+      }
+
+      if (activeCell.model.type != 'code') {
+        console.log('Can only run when code cell is active');
+        return;
+      }
+
+      // Copy contents of the current cell
+      NotebookActions.copy(notebook);
+      // Insert markdown cell
+      NotebookActions.insertBelow(notebook);
+      NotebookActions.setMarkdownHeader(notebook, getCurrentHeadingLevel(notebook.activeCell!, notebook) + 1);
+      // Paste the code cell below the markdown cell
+      NotebookActions.paste(notebook, 'below');
+      // Go back to the header cell and go into the edit mode
+      NotebookActions.selectAbove(notebook);
+      notebook.activeCell!.editorWidget.activate();
+  }
+
+  /**
+   * Get the heading level for the given cell.
+   *
+   * If the given cell is header, returns its level. Otherwise finds the first heading cell above it and returns its level.
+   * If there are no headings above, returns 0.
+   *
+   * @param cell - notebook cell
+   * @param notebook - notebook that the cell belongs to
+   * @returns A number between 0 and 6, representing the heading level for the given cell.
+   */
+  function getCurrentHeadingLevel(cell: Cell, notebook: Notebook): number {
+    // find the index of the current cell
+    let index = findIndex(
+      notebook.widgets,
+      (possibleCell: Cell, index: number) => {
+        return cell.model.id === possibleCell.model.id;
+      }
+    );
+    // look back to find the first heading cell
+    for (; index >= 0; index--) {
+      let hInfo = NotebookActions.getHeadingInfo(notebook.widgets[index]);
+      if (hInfo.isHeading) {
+        return hInfo.headingLevel;
+      }
+    }
+    // We didn't find any heading cells, so the heading level is 0
+    return 0;
+  }
+}
 
 export default plugin;
